@@ -1,0 +1,140 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700&display=swap');
+@import "tailwindcss";
+
+/* ============================================
+   WARM EMBRACE THEME - Sarthi AI
+   ============================================ */
+
+@theme {
+  /* Core Color Palette */
+  --color-cream: #FDFCF0;
+  --color-charcoal: #2D2D2D;
+  --color-terracotta: #E07A5F;
+  --color-terracotta-dark: #c96a52;
+
+  /* Legacy colors for compatibility */
+  --color-sage: #6B8E23;
+  --color-clay: #D27D59;
+
+  /* Typography */
+  --font-sans: "Poppins", sans-serif;
+}
+
+/* Global Styles */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+body {
+  background-color: var(--color-cream);
+  color: var(--color-charcoal);
+  font-family: var(--font-sans);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* High readability typography */
+h1,
+h2,
+h3,
+h4,
+h5,
+h6 {
+  font-family: var(--font-sans);
+  font-weight: 700;
+  color: var(--color-charcoal);
+  line-height: 1.2;
+}
+
+/* Typewriter cursor animation */
+@keyframes blink {
+
+  0%,
+  50% {
+    opacity: 1;
+  }
+
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+
+.typewriter-cursor {
+  display: inline-block;
+  width: 3px;
+  height: 1.2em;
+  background-color: var(--color-terracotta);
+  margin-left: 4px;
+  animation: blink 1s infinite;
+  vertical-align: middle;
+}
+
+/* Title crossfade animation */
+@keyframes fadeInOut {
+
+  0%,
+  40% {
+    opacity: 1;
+  }
+
+  50%,
+  90% {
+    opacity: 0;
+  }
+
+  100% {
+    opacity: 1;
+  }
+}
+
+.title-animate {
+  animation: fadeInOut 6s ease-in-out infinite;
+}
+
+/* Button hover effects */
+.btn-primary {
+  background-color: var(--color-terracotta);
+  color: white;
+  border: none;
+  transition: all 0.3s ease;
+}
+
+.btn-primary:hover {
+  background-color: var(--color-terracotta-dark);
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(224, 122, 95, 0.35);
+}
+
+.btn-ghost {
+  background-color: transparent;
+  color: var(--color-charcoal);
+  border: 2px solid var(--color-charcoal);
+  transition: all 0.3s ease;
+}
+
+.btn-ghost:hover {
+  background-color: var(--color-charcoal);
+  color: var(--color-cream);
+}
+
+/* Smooth scroll */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Focus states for accessibility */
+button:focus-visible,
+a:focus-visible {
+  outline: 3px solid var(--color-terracotta);
+  outline-offset: 3px;
+}
