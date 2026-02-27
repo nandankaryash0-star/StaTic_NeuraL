@@ -2,86 +2,86 @@ import axios from "axios";
 
 const BASE_URL = "https://api.elevenlabs.io/v1";
 
+// ─── Constants ─────────────────────────────────────────────────────────────
+
 /**
- * ElevenLabs Service
- *
- * Converts text to speech via the ElevenLabs TTS API.
- * Returns a Base64-encoded audio string for easy JSON transport to the frontend.
- *
- * For ultra-low latency, see `streamAudio()` which pipes the response
- * stream directly to an Express response object.
+ * eleven_turbo_v2_5  — ElevenLabs' fastest, lowest-latency model.
+ * Falls back to the env var ELEVENLABS_MODEL_ID for easy override.
  */
+const TURBO_MODEL = process.env.ELEVENLABS_MODEL_ID ?? "eleven_turbo_v2_5";
+
+/**
+ * optimize_streaming_latency: 4 is the maximum ElevenLabs setting.
+ * Sacrifices some quality for the lowest possible first-byte latency.
+ */
+const STREAM_LATENCY_OPT = 4;
+
+/** Shared voice settings — tweak via env for per-deployment tuning. */
+const VOICE_SETTINGS = {
+    stability: parseFloat(process.env.ELEVENLABS_STABILITY ?? "0.45"),
+    similarity_boost: parseFloat(process.env.ELEVENLABS_SIMILARITY ?? "0.75"),
+    style: parseFloat(process.env.ELEVENLABS_STYLE ?? "0.2"),
+    use_speaker_boost: true,
+};
+
+// ─── Helpers ───────────────────────────────────────────────────────────────
 
 const getHeaders = () => ({
     "xi-api-key": process.env.ELEVENLABS_API_KEY,
     "Content-Type": "application/json",
 });
 
-/**
- * Convert text to speech and return a Base64-encoded audio string.
- *
- * @param {string} text — The text to synthesize.
- * @param {string} [voiceId] — ElevenLabs voice ID. Defaults to env var.
- * @returns {Promise<string>} — Base64-encoded MP3 audio.
- */
-export const textToSpeechBase64 = async (text, voiceId) => {
-    const voice = voiceId ?? process.env.ELEVENLABS_VOICE_ID;
-
+const requireApiKey = () => {
     if (!process.env.ELEVENLABS_API_KEY) {
         throw new Error("ELEVENLABS_API_KEY is not set.");
     }
+};
+
+// ─── REST / Base64 TTS (used by the REST controller) ──────────────────────
+
+/**
+ * Convert text to speech and return a Base64-encoded audio string.
+ * Used by the REST POST /api/transcript endpoint.
+ *
+ * @param {string} text     — Text to synthesize.
+ * @param {string} [voiceId]
+ * @returns {Promise<string>} — Base64-encoded MP3 audio.
+ */
+export const textToSpeechBase64 = async (text, voiceId) => {
+    requireApiKey();
+    const voice = voiceId ?? process.env.ELEVENLABS_VOICE_ID;
 
     const response = await axios.post(
-        `${BASE_URL}/text-to-speech/${voice}`,
-        {
-            text,
-            model_id: "eleven_turbo_v2",   // Lowest latency model
-            voice_settings: {
-                stability: 0.5,
-                similarity_boost: 0.75,
-                style: 0.3,
-                use_speaker_boost: true,
-            },
-        },
+        `${BASE_URL}/text-to-speech/${voice}?optimize_streaming_latency=${STREAM_LATENCY_OPT}`,
+        { text, model_id: TURBO_MODEL, voice_settings: VOICE_SETTINGS },
         {
             headers: getHeaders(),
-            responseType: "arraybuffer",    // Raw binary for accurate Base64 encoding
+            responseType: "arraybuffer",
             timeout: 15000,
         }
     );
 
-    const base64Audio = Buffer.from(response.data).toString("base64");
-    return base64Audio;
+    return Buffer.from(response.data).toString("base64");
 };
 
+// ─── Express Stream (used by REST streaming endpoint) ─────────────────────
+
 /**
- * Stream TTS audio directly to an Express response.
- * Use this for lower latency — the browser can start playing
- * audio before the full response is received.
+ * Stream TTS audio directly to an Express response object.
+ * Lower latency than Base64 — browser starts playing before the full buffer
+ * arrives.
  *
- * @param {string} text
- * @param {import("express").Response} res — Express response object
- * @param {string} [voiceId]
+ * @param {string}                text
+ * @param {import("express").Response} res
+ * @param {string}                [voiceId]
  */
 export const streamAudioToResponse = async (text, res, voiceId) => {
+    requireApiKey();
     const voice = voiceId ?? process.env.ELEVENLABS_VOICE_ID;
 
-    if (!process.env.ELEVENLABS_API_KEY) {
-        throw new Error("ELEVENLABS_API_KEY is not set.");
-    }
-
     const response = await axios.post(
-        `${BASE_URL}/text-to-speech/${voice}/stream`,
-        {
-            text,
-            model_id: "eleven_turbo_v2",
-            voice_settings: {
-                stability: 0.5,
-                similarity_boost: 0.75,
-                style: 0.3,
-                use_speaker_boost: true,
-            },
-        },
+        `${BASE_URL}/text-to-speech/${voice}/stream?optimize_streaming_latency=${STREAM_LATENCY_OPT}`,
+        { text, model_id: TURBO_MODEL, voice_settings: VOICE_SETTINGS },
         {
             headers: getHeaders(),
             responseType: "stream",
@@ -92,7 +92,6 @@ export const streamAudioToResponse = async (text, res, voiceId) => {
     res.setHeader("Content-Type", "audio/mpeg");
     res.setHeader("Transfer-Encoding", "chunked");
     res.setHeader("X-Content-Type-Options", "nosniff");
-
     response.data.pipe(res);
 
     return new Promise((resolve, reject) => {
@@ -101,79 +100,113 @@ export const streamAudioToResponse = async (text, res, voiceId) => {
     });
 };
 
+// ─── WebSocket Binary Chunked Stream (primary real-time path) ─────────────
+
 /**
- * Stream TTS audio directly to a WebSocket client as binary frames.
+ * streamAudioToWebSocket
  *
- * This is the lowest-latency path: the first chunk of audio is forwarded
- * to the browser the moment it arrives from ElevenLabs — zero buffering.
+ * The ultra-low-latency path.
+ *
+ * Protocol:
+ *   1. Before any binary data is sent, a JSON metadata frame is sent:
+ *        { type: "audio_meta", responseText, model, sequenceId }
+ *   2. Each raw MP3 chunk from ElevenLabs is forwarded as a binary WS frame.
+ *      No buffering — first byte is sent the moment it arrives.
+ *   3. Callers handle EOS signalling (audio_end JSON frame) after this resolves.
  *
  * @param {string}        text        — Text to synthesize.
- * @param {import("ws")}  ws          — WebSocket client instance.
- * @param {AbortSignal}   [signal]    — Optional AbortSignal for interruption.
- * @param {string}        [voiceId]   — ElevenLabs voice ID override.
- * @returns {Promise<void>} — Resolves when stream ends or is aborted.
+ * @param {import("ws")}  ws          — Live WebSocket client.
+ * @param {AbortSignal}   [signal]    — Cancel token for barge-in / timeout.
+ * @param {object}        [options]
+ * @param {string}        [options.voiceId]    — Override default voice.
+ * @param {number}        [options.sequenceId] — Pipeline sequence ID (for UI sync).
+ * @returns {Promise<{ firstByteMs: number, totalChunks: number }>}
  */
-export const streamAudioToWebSocket = async (text, ws, signal, voiceId) => {
+export const streamAudioToWebSocket = async (text, ws, signal, options = {}) => {
+    requireApiKey();
+
+    const { voiceId, sequenceId } = options;
     const voice = voiceId ?? process.env.ELEVENLABS_VOICE_ID;
+    const requestStart = Date.now();
 
-    if (!process.env.ELEVENLABS_API_KEY) {
-        throw new Error("ELEVENLABS_API_KEY is not set.");
-    }
-
+    // ── 1. Kick off the streaming request ─────────────────────────────────
     const response = await axios.post(
-        `${BASE_URL}/text-to-speech/${voice}/stream`,
-        {
-            text,
-            model_id: "eleven_turbo_v2",
-            voice_settings: {
-                stability: 0.5,
-                similarity_boost: 0.75,
-                style: 0.3,
-                use_speaker_boost: true,
-            },
-        },
+        `${BASE_URL}/text-to-speech/${voice}/stream?optimize_streaming_latency=${STREAM_LATENCY_OPT}`,
+        { text, model_id: TURBO_MODEL, voice_settings: VOICE_SETTINGS },
         {
             headers: getHeaders(),
             responseType: "stream",
             timeout: 30000,
-            signal, // Axios natively supports AbortSignal
+            signal, // Passed directly to Axios — aborts the HTTP request
         }
     );
 
     const stream = response.data;
 
     return new Promise((resolve, reject) => {
-        // If the signal fires mid-stream, destroy immediately
+        let firstByteMs = -1;
+        let totalChunks = 0;
+        let metaSent = false;
+
+        // ── Abort handler ──────────────────────────────────────────────────
         const onAbort = () => {
             stream.destroy();
-            resolve(); // Resolve gracefully — the caller handles abort semantics
+            resolve({ firstByteMs, totalChunks }); // Graceful — caller checks signal.aborted
         };
 
         if (signal) {
             if (signal.aborted) {
                 stream.destroy();
-                return resolve();
+                return resolve({ firstByteMs: -1, totalChunks: 0 });
             }
             signal.addEventListener("abort", onAbort, { once: true });
         }
 
+        // ── Data handler — zero buffering ──────────────────────────────────
         stream.on("data", (chunk) => {
-            // Only send if the socket is still open
-            if (ws.readyState === ws.OPEN) {
-                ws.send(chunk, { binary: true });
+            if (ws.readyState !== ws.OPEN) {
+                stream.destroy();
+                return;
             }
+
+            // Send JSON metadata exactly once, just before the first audio byte
+            if (!metaSent) {
+                metaSent = true;
+                firstByteMs = Date.now() - requestStart;
+                ws.send(
+                    JSON.stringify({
+                        type: "audio_meta",
+                        responseText: text,
+                        model: TURBO_MODEL,
+                        sequenceId,
+                        firstByteMs,
+                    })
+                );
+                console.log(
+                    `[ElevenLabs] 🎵 First byte in ${firstByteMs}ms | seq: ${sequenceId ?? "?"}`
+                );
+            }
+
+            // Forward the raw binary chunk immediately
+            ws.send(chunk, { binary: true });
+            totalChunks++;
         });
 
+        // ── Stream end ─────────────────────────────────────────────────────
         stream.on("end", () => {
             signal?.removeEventListener("abort", onAbort);
-            resolve();
+            console.log(
+                `[ElevenLabs] ✅ Stream complete | chunks: ${totalChunks} | seq: ${sequenceId ?? "?"}`
+            );
+            resolve({ firstByteMs, totalChunks });
         });
 
+        // ── Stream error ───────────────────────────────────────────────────
         stream.on("error", (err) => {
             signal?.removeEventListener("abort", onAbort);
-            // Cancelled streams throw CancelledError — treat as non-fatal
-            if (axios.isCancel(err) || err.code === "ERR_CANCELED") {
-                resolve();
+            // Cancelled / aborted streams are non-fatal
+            if (axios.isCancel(err) || err.code === "ERR_CANCELED" || err.name === "AbortError") {
+                resolve({ firstByteMs, totalChunks });
             } else {
                 reject(err);
             }
@@ -181,13 +214,13 @@ export const streamAudioToWebSocket = async (text, ws, signal, voiceId) => {
     });
 };
 
+// ─── Utility ───────────────────────────────────────────────────────────────
+
 /**
  * Fetch available voices from ElevenLabs.
- * Useful for voice picker UIs.
  */
 export const listVoices = async () => {
-    const response = await axios.get(`${BASE_URL}/voices`, {
-        headers: getHeaders(),
-    });
+    requireApiKey();
+    const response = await axios.get(`${BASE_URL}/voices`, { headers: getHeaders() });
     return response.data.voices;
 };

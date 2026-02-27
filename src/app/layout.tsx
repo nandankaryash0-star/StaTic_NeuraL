@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-    title: "AI Voice Assistant",
+    title: "SARTHI 2.0 Assistant",
     description:
-        "Real-time, human-like AI voice assistant with live transcription.",
+        "Real-time, human-like SARTHI 2.0 voice assistant with live transcription.",
 };
 
 export default function RootLayout({

@@ -32,9 +32,9 @@ export const handleTranscript = async (req, res, next) => {
         const session = await getOrCreateSession(sessionId);
 
         // ── 2. Intent — classify the user's text ─────────────────────────────
-        const intent = detectIntent(transcript.trim(), session.currentState);
+        const { intent, confidence, matches } = detectIntent(transcript.trim(), session.currentState, { debug: true });
         console.log(
-            `[${session.sessionId}] State: ${session.currentState} | Intent: ${intent}`
+            `[${session.sessionId}] State: ${session.currentState} | Intent: ${intent} | Confidence: ${confidence}`
         );
 
         // ── 3. FSM — determine next state and response text ───────────────────
@@ -65,6 +65,8 @@ export const handleTranscript = async (req, res, next) => {
             audio: audioBase64,
             nextState,
             intent,
+            confidence,
+            matches,
             responseKey,
         });
     } catch (error) {

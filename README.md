@@ -1,4 +1,4 @@
-# AI Voice Chatbot
+# SARTHI 2.0 Chatbot
 
 A real-time, human-like voice assistant application built with a modern web stack. The application consists of a Next.js frontend for audio capture and playback, and a Node.js/Express backend that manages conversation state, intent classification, and Text-to-Speech (TTS) via ElevenLabs.
 

@@ -1,12 +1,18 @@
 {
-  "name": "ai-voice-bot",
+  "name": "sarthi-2.0-bot",
   "version": "1.0.0",
   "private": true,
   "scripts": {
     "dev": "next dev --turbopack",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "test:stress": "cd server && node tests/stress-test.js",
+    "test:flood": "cd server && node tests/stress-test.js flood",
+    "test:barge-in": "cd server && node tests/stress-test.js barge-in",
+    "test:loop": "cd server && node tests/stress-test.js loop",
+    "test:ghost": "cd server && node tests/stress-test.js ghost",
+    "test:reconnect": "cd server && node tests/stress-test.js reconnect"
   },
   "dependencies": {
     "next": "^15.3.3",

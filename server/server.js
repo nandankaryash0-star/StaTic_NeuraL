@@ -10,6 +10,8 @@ import { getOrCreateSession, updateSession } from "./services/memory.service.js"
 import { detectIntent } from "./services/intent.service.js";
 import { VoiceFSM } from "./services/fsm.service.js";
 import { streamAudioToWebSocket } from "./services/elevenlabs.service.js";
+import { buildMessages } from "./services/prompt-library.service.js";
+import { streamLLMAndAudio } from "./services/llm.service.js";
 import { sessionManager } from "./services/session-manager.service.js";
 
 const app = express();
@@ -144,11 +146,19 @@ wss.on("connection", (ws, req) => {
 
                 // ── Stream goodbye audio (zero-buffered) ─────────────────
                 try {
-                    await streamAudioToWebSocket(GOODBYE_TEXT, ws, controller.signal);
+                    sessionState.isStreaming = true;
+                    await streamAudioToWebSocket(
+                        GOODBYE_TEXT,
+                        ws,
+                        controller.signal,
+                        { sequenceId }
+                    );
                 } catch (err) {
                     if (err.code !== "ERR_CANCELED" && err.name !== "AbortError") {
                         console.error("[Timeout] TTS error:", err.message);
                     }
+                } finally {
+                    sessionState.isStreaming = false;
                 }
 
                 // ── EOS signal ───────────────────────────────────────────
@@ -203,44 +213,87 @@ wss.on("connection", (ws, req) => {
             sessionState.sessionId = session.sessionId;
 
             // ── 2. Intent ─────────────────────────────────────────────────
-            const intent = detectIntent(transcript, session.currentState);
+            const { intent, confidence, matches } = detectIntent(transcript, session.currentState, { debug: true });
             console.log(
-                `[Pipeline] [${session.sessionId}] State: ${session.currentState} → Intent: ${intent}`
+                `[Pipeline] [${session.sessionId}] State: ${session.currentState} → Intent: ${intent} (${confidence})`
             );
 
             // ── 3. FSM ────────────────────────────────────────────────────
             const fsm = new VoiceFSM(session.currentState);
-            const { nextState, responseText, responseKey } = fsm.transition(intent);
+            const { nextState, responseText, responseKey, goal } = fsm.transition(intent);
 
-            // ── 4. Send text immediately ──────────────────────────────────
+            // ── 4. Send metadata immediately (UI + observability) ─────────
             send({
-                type: "transcript",
-                role: "ai",
-                content: responseText,
+                type: "pipeline_meta",
                 nextState,
                 intent,
+                confidence,
+                matches,
                 responseKey,
+                goal,
                 sequenceId,
             });
 
-            // ── 5. Abort check before expensive TTS call ──────────────────
+            // ── 5. Abort check before expensive calls ─────────────────────
             if (signal.aborted) {
                 console.log(`[Pipeline] Aborted before TTS | seq: ${sequenceId}`);
                 return;
             }
 
-            // ── 6. Stream audio (binary chunks, zero-buffered) ────────────
+            // ── 6. LLM (governed by FSM) → double-stream to TTS ───────────
             const latencyMs = Date.now() - startMs;
             console.log(
                 `[Pipeline] [${session.sessionId}] Latency to audio start: ${latencyMs}ms`
             );
 
+            const { messages, maxTokens } = buildMessages(
+                transcript,
+                session.currentState,
+                nextState,
+                intent,
+                []
+            );
+
             try {
-                await streamAudioToWebSocket(responseText, ws, signal);
+                // ── isStreaming guard — prevents double-streams ───────────
+                sessionState.isStreaming = true;
+                const { fullText, sentenceCount, firstTokenMs, offTrack } = await streamLLMAndAudio(
+                    messages,
+                    maxTokens,
+                    ws,
+                    signal,
+                    {
+                        sequenceId,
+                        onOffTrack: (flag) => {
+                            send({ type: "offtrack", offTrack: flag, sequenceId });
+                        },
+                        onSentence: (sentence) => {
+                            send({
+                                type: "transcript",
+                                role: "ai",
+                                content: sentence,
+                                nextState,
+                                sequenceId,
+                            });
+                        },
+                    }
+                );
+                console.log(
+                    `[Pipeline] 🤖 LLM complete | firstToken: ${firstTokenMs}ms | sentences: ${sentenceCount} | seq: ${sequenceId}`
+                );
+
+                if (typeof offTrack === "boolean") {
+                    send({ type: "offtrack", offTrack, sequenceId, isFinal: true });
+                }
+
+                // For persistence, store the full LLM text as the assistant turn
+                sessionState._lastLLMText = fullText;
             } catch (err) {
                 if (err.code !== "ERR_CANCELED" && err.name !== "AbortError") {
-                    console.error("[Pipeline] TTS stream error:", err.message);
+                    console.error("[Pipeline] LLM/TTS stream error:", err.message);
                 }
+            } finally {
+                sessionState.isStreaming = false;
             }
 
             // ── 7. End-of-stream signal ───────────────────────────────────
@@ -256,9 +309,11 @@ wss.on("connection", (ws, req) => {
                 return;
             }
 
-            // ── 9. Persist to MongoDB ─────────────────────────────────────
+            // ── 9. Persist to MongoDB (FSM decides nextState; LLM only text)
             try {
-                await updateSession(session, transcript, responseText, intent, nextState);
+                const aiTextToPersist = sessionState._lastLLMText ?? responseText;
+                delete sessionState._lastLLMText;
+                await updateSession(session, transcript, aiTextToPersist, intent, nextState);
                 console.log(
                     `[Pipeline] State saved: ${session.currentState} → ${nextState} | seq: ${sequenceId}`
                 );

@@ -16,6 +16,8 @@
  *  3. Add transition rules to `TRANSITIONS`.
  */
 
+import { getPromptForState } from "./prompt-library.service.js";
+
 // ─── State Registry ────────────────────────────────────────────────────────
 export const STATES = {
     IDLE: "IDLE",
@@ -30,7 +32,7 @@ export const STATES = {
 // ─── Response Library ──────────────────────────────────────────────────────
 export const RESPONSES = {
     WELCOME:
-        "Hello! I'm your AI voice assistant. You can book an appointment, get information, or ask for help. How can I help you today?",
+        "Hello! I'm SARTHI 2.0, your voice assistant. You can book an appointment, get information, or ask for help. How can I help you today?",
 
     ASK_NAME:
         "Great, let's get you set up. Could you tell me your name?",
@@ -150,7 +152,12 @@ export class VoiceFSM {
      * Process an intent and return the transition result.
      *
      * @param {string} intent — Intent label from intent.service.js
-     * @returns {{ nextState: string, responseText: string, responseKey: string }}
+     * @returns {{
+     *   nextState:    string,
+     *   responseText: string,   // Canned fallback (used by REST endpoint)
+     *   responseKey:  string,
+     *   goal:         string,   // LLM instruction for this next state
+     * }}
      */
     transition(intent) {
         const stateMap = TRANSITIONS[this.currentState] ?? {};
@@ -175,11 +182,13 @@ export class VoiceFSM {
 
         const nextState = rule.nextState ?? this.currentState; // REPEAT keeps current
         const responseText = RESPONSES[rule.responseKey] ?? RESPONSES.FALLBACK;
+        const { goal } = getPromptForState(nextState);
 
         return {
             nextState,
             responseKey: rule.responseKey,
-            responseText,
+            responseText, // Kept for REST controller backward compat
+            goal, // LLM constraint for the next state
         };
     }
 }

@@ -8,6 +8,7 @@
  * Key properties per session:
  *  - ws               : The WebSocket instance
  *  - isProcessing     : Whether the pipeline is currently running
+ *  - isStreaming       : Whether a binary audio stream is in-flight
  *  - currentAbortController : AbortController for the active TTS/pipeline
  *  - lastSequenceId   : Monotonically increasing ID to detect stale responses
  *  - sessionId        : The MongoDB session ID (set after first pipeline run)
@@ -29,6 +30,7 @@ class ActiveSessionManager {
         const state = {
             ws,
             isProcessing: false,
+            isStreaming: false,
             currentAbortController: null,
             lastSequenceId: 0,
             sessionId: null,
